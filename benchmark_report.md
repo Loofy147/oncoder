@@ -32,11 +32,11 @@ Does a superior reconstruction compressor yield a superior vector search represe
 ### Computational Efficiency (Semantic Text Embeddings)
 | Compression Method | Batch Throughput (vec/sec) | Mean Latency (ms) | Median Latency (ms) | P99 Latency (ms) |
 | --- | --- | --- | --- | --- |
-| Random Projection | 4,846,105.1 | 0.0035 ms | 0.0029 ms | 0.0099 ms |
-| PCA | 3,013,149.4 | 0.0055 ms | 0.0049 ms | 0.0149 ms |
-| Vanilla AE | 471,243.6 | 0.0215 ms | 0.0195 ms | 0.0553 ms |
-| Geometry-Aware AE | 464,177.1 | 0.0220 ms | 0.0202 ms | 0.0638 ms |
-| Local Geometry-Aware AE | 522,296.7 | 0.0206 ms | 0.0187 ms | 0.0511 ms |
+| Random Projection | 4,554,076.0 | 0.0024 ms | 0.0022 ms | 0.0070 ms |
+| PCA | 2,680,923.0 | 0.0043 ms | 0.0038 ms | 0.0121 ms |
+| Vanilla AE | 460,988.5 | 0.0170 ms | 0.0158 ms | 0.0528 ms |
+| Geometry-Aware AE | 468,062.0 | 0.0179 ms | 0.0161 ms | 0.0591 ms |
+| Local Geometry-Aware AE | 520,514.3 | 0.0156 ms | 0.0144 ms | 0.0436 ms |
 
 ## Dataset Evaluation: Nonlinear Manifold
 **Shape**: Original 800x40 compressed to $z=3$ dimensions. Hidden Layer units: 16.
@@ -62,11 +62,11 @@ Does a superior reconstruction compressor yield a superior vector search represe
 ### Computational Efficiency (Nonlinear Manifold)
 | Compression Method | Batch Throughput (vec/sec) | Mean Latency (ms) | Median Latency (ms) | P99 Latency (ms) |
 | --- | --- | --- | --- | --- |
-| Random Projection | 19,284,156.3 | 0.0020 ms | 0.0019 ms | 0.0027 ms |
-| PCA | 8,818,510.4 | 0.0037 ms | 0.0032 ms | 0.0087 ms |
-| Vanilla AE | 1,589,880.7 | 0.0142 ms | 0.0131 ms | 0.0366 ms |
-| Geometry-Aware AE | 1,691,251.6 | 0.0145 ms | 0.0129 ms | 0.0531 ms |
-| Local Geometry-Aware AE | 1,974,951.9 | 0.0130 ms | 0.0119 ms | 0.0436 ms |
+| Random Projection | 17,521,896.6 | 0.0019 ms | 0.0018 ms | 0.0024 ms |
+| PCA | 9,130,457.7 | 0.0034 ms | 0.0032 ms | 0.0084 ms |
+| Vanilla AE | 1,707,604.7 | 0.0160 ms | 0.0132 ms | 0.0923 ms |
+| Geometry-Aware AE | 1,711,524.2 | 0.0141 ms | 0.0130 ms | 0.0449 ms |
+| Local Geometry-Aware AE | 1,743,993.3 | 0.0130 ms | 0.0117 ms | 0.0431 ms |
 
 ## Production Engineering Analysis & Recommendations
 ### 1. The Geometry-Preserving Paradox Explained
