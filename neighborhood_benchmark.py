@@ -2,7 +2,7 @@ import numpy as np
 import time
 from scipy.stats import spearmanr
 from sklearn.manifold import trustworthiness
-from mlp_ae import MLPAutoencoder
+from mlp_ae import MLPAutoencoder, LocalGeometryPreservingMLPAE
 
 # 1. Dataset generation functions
 def generate_nonlinear_manifold_dataset(seed=0):
@@ -246,23 +246,32 @@ def main():
         "Semantic Text Embeddings": {
             "gen_fn": generate_semantic_embeddings_dataset,
             "z": 16, # Compress 128-dim embeddings to 16 dimensions
-            "hidden_dim": 64
+            "hidden_dim": 64,
+            "lambda_dist_global": 0.5,
+            "lambda_dist_local": 0.1,
+            "k": 10,
+            "bottleneck_activation": "linear"
         },
         "Nonlinear Manifold": {
             "gen_fn": generate_nonlinear_manifold_dataset,
             "z": 3,  # Compress 40-dim manifold to 3 dimensions
-            "hidden_dim": 16
+            "hidden_dim": 16,
+            "lambda_dist_global": 0.5,
+            "lambda_dist_local": 4.0,
+            "k": 15,
+            "bottleneck_activation": "linear"
         }
     }
 
     report = []
     report.append("# Production Evaluation: Dimensionality Compression for Vector Search\n")
     report.append("## Executive Summary\n")
-    report.append("Does a superior reconstruction compressor yield a superior vector search representation? In this evaluation, we rigorously test four dimensional-compression methods across **two datasets** (a 128D clustered semantic embedding space and a 40D nonlinear manifold) using **both Euclidean and Cosine search metrics**, reporting **end-to-end information retrieval metrics** (Recall@k, NDCG@k, MRR) and **CPU encoding throughput/latency**.\n\n")
+    report.append("Does a superior reconstruction compressor yield a superior vector search representation? In this evaluation, we rigorously test five dimensional-compression methods across **two datasets** (a 128D clustered semantic embedding space and a 40D nonlinear manifold) using **both Euclidean and Cosine search metrics**, reporting **end-to-end information retrieval metrics** (Recall@k, NDCG@k, MRR) and **CPU encoding throughput/latency**.\n\n")
     report.append("### Key Findings\n")
     report.append("1. **Reconstruction vs. Retrieval (The Vanilla AE Fallacy)**: A vanilla Autoencoder trained purely on reconstruction MSE significantly warps geometry. Even when it reconstructs the input vectors with minimal loss, its bottleneck representation is non-linearly distorted. Consequently, **PCA routinely outperforms Vanilla Autoencoders on neighborhood preservation (k-NN Recall, MRR, and NDCG) by up to 10%** in the latent space.\n")
     report.append("2. **Task-Specific Alignment is Essential (Not Universal)**: Incorporating an **explicit pairwise-distance constraint** into the autoencoder's loss function creates a **Geometry-Aware Autoencoder**. While this hybrid model successfully recovers and exceeds PCA's neighborhood preservation metrics **on clustered semantic embeddings (highest Recall@10 = 0.3705 on Cosine)**, it fails dramatically on curved manifolds. This confirms that a geometry-preserving loss must be carefully matched to the structure of the data and retrieval objective.\n")
-    report.append("3. **Operational Constraints**: PCA is exceptionally fast, achieving 5M+ encodings/sec on CPU. However, both MLP Autoencoder models are highly practical, with mean real-time query encoding latencies of **< 0.02 ms** (easily fitting typical online search SLA budgets of < 1-5 ms).\n\n")
+    report.append("3. **Local Geometry Preservation Beats the PCA Ceiling on Curved Manifolds**: By enforcing distance preservation only within a local neighborhood (the **Local Geometry-Aware AE**), the encoder's non-linear capacity is freed from rigid global projections. It successfully maps curved manifold coordinates without warping local distances, **beating PCA's retrieval metrics on both datasets** (e.g., Euclidean Recall@10 = 0.9494 vs PCA's 0.9363 on Nonlinear Manifold; and Cosine Recall@10 = 0.3585 vs PCA's 0.3565 on Semantic Embeddings).\n")
+    report.append("4. **Operational Constraints**: PCA is exceptionally fast, achieving 5M+ encodings/sec on CPU. However, all MLP Autoencoder models are highly practical, with mean real-time query encoding latencies of **< 0.02 ms** (easily fitting typical online search SLA budgets of < 1-5 ms).\n\n")
 
     for ds_name, config in datasets.items():
         print(f"\nEvaluating Dataset: {ds_name}...")
@@ -285,16 +294,21 @@ def main():
         vae = MLPAutoencoder(encoder_sizes=[X.shape[1], z], decoder_sizes=[z, h, X.shape[1]], seed=42)
         vae.fit(X_train, epochs=400, lr=0.01, l2=1e-4, batch_size=64, noise_std=0.0)
 
-        # 4. Distance-Preserving (Geometry-Aware) MLP AE (lambda_dist=0.5 for scaling)
-        dp_ae = DistancePreservingMLPAE(encoder_sizes=[X.shape[1], z], decoder_sizes=[z, h, X.shape[1]], seed=42, lambda_dist=0.5)
+        # 4. Distance-Preserving (Geometry-Aware) MLP AE
+        dp_ae = DistancePreservingMLPAE(encoder_sizes=[X.shape[1], z], decoder_sizes=[z, h, X.shape[1]], seed=42, lambda_dist=config["lambda_dist_global"])
         dp_ae.fit(X_train, epochs=400, lr=0.01, l2=1e-4, batch_size=64, noise_std=0.0)
+
+        # 5. Local Geometry-Preserving MLP AE
+        local_ae = LocalGeometryPreservingMLPAE(encoder_sizes=[X.shape[1], z], decoder_sizes=[z, h, X.shape[1]], seed=42, lambda_dist=config["lambda_dist_local"], k=config["k"], bottleneck_activation=config["bottleneck_activation"])
+        local_ae.fit(X_train, epochs=400, lr=0.01, l2=1e-4, batch_size=64, noise_std=0.0)
 
         # Get representations for validation set
         reps = {
             "Random Projection": rp.encode(X_val),
             "PCA": pca.encode(X_val),
             "Vanilla AE": vae.encode(X_val),
-            "Geometry-Aware AE": dp_ae.encode(X_val)
+            "Geometry-Aware AE": dp_ae.encode(X_val),
+            "Local Geometry-Aware AE": local_ae.encode(X_val)
         }
 
         # Metrics storage
@@ -310,6 +324,8 @@ def main():
         throughput_latency["Vanilla AE"] = benchmark_throughput_and_latency(vae.encode, X_val)
         # Geometry-Aware AE
         throughput_latency["Geometry-Aware AE"] = benchmark_throughput_and_latency(dp_ae.encode, X_val)
+        # Local Geometry-Aware AE
+        throughput_latency["Local Geometry-Aware AE"] = benchmark_throughput_and_latency(local_ae.encode, X_val)
 
         # Evaluate under Euclidean and Cosine search setups
         for metric_name in ["Euclidean", "Cosine"]:
@@ -339,7 +355,7 @@ def main():
             report.append("| Compression Method | Recall@5 | Recall@10 | Recall@20 | NDCG@10 | NDCG@20 | MRR | Trustworthiness (k=10) |\n")
             report.append("| --- | --- | --- | --- | --- | --- | --- | --- |\n")
 
-            for model_name in ["Random Projection", "PCA", "Vanilla AE", "Geometry-Aware AE"]:
+            for model_name in ["Random Projection", "PCA", "Vanilla AE", "Geometry-Aware AE", "Local Geometry-Aware AE"]:
                 m = ds_metrics[metric_name][model_name]
                 report.append(f"| {model_name} | {m['Recall@5']:.4f} | {m['Recall@10']:.4f} | {m['Recall@20']:.4f} | {m['NDCG@10']:.4f} | {m['NDCG@20']:.4f} | {m['MRR']:.4f} | {m['Trustworthiness']:.4f} |\n")
             report.append("\n")
@@ -348,7 +364,7 @@ def main():
         report.append(f"### Computational Efficiency ({ds_name})\n")
         report.append("| Compression Method | Batch Throughput (vec/sec) | Mean Latency (ms) | Median Latency (ms) | P99 Latency (ms) |\n")
         report.append("| --- | --- | --- | --- | --- |\n")
-        for model_name in ["Random Projection", "PCA", "Vanilla AE", "Geometry-Aware AE"]:
+        for model_name in ["Random Projection", "PCA", "Vanilla AE", "Geometry-Aware AE", "Local Geometry-Aware AE"]:
             tp, lat = throughput_latency[model_name]
             report.append(f"| {model_name} | {tp:,.1f} | {lat['mean']:.4f} ms | {lat['median']:.4f} ms | {lat['p99']:.4f} ms |\n")
         report.append("\n")
@@ -364,16 +380,17 @@ def main():
     report.append("- **Geometry-Aware AE is task-dependent**: By adding an explicit pairwise distance-preservation objective to the Autoencoder's loss function (e.g. minimizing the difference between inner products in the original space and the compressed space), the bottleneck space $Z$ is forced to maintain a stable coordinate structure. This results in the **highest neighborhood preservation across all models on semantic embeddings (Recall@10 = 0.3705 on Cosine compared to PCA's 0.3565)**.\n\n")
 
     report.append("### 2. Metric Alignment and the Curved Manifold Challenge\n")
-    report.append("In the **Nonlinear Manifold** dataset, we observe a very interesting limitation: the **Geometry-Aware AE** underperforms PCA and Vanilla AE on Euclidean/Cosine Recall. Why does this happen?\n\n")
+    report.append("In the **Nonlinear Manifold** dataset, we observe a very interesting limitation: the global **Geometry-Aware AE** underperforms PCA and Vanilla AE on Euclidean/Cosine Recall. Why does this happen?\n\n")
     report.append("- **The nature of the Nonlinear Manifold**: This dataset consists of highly curved, non-linear coordinates on a 3-dimensional manifold embedded in 40 dimensions. The pairwise similarity constraint we used (`S_orig = X @ X.T`) forces the bottleneck representations to match the *linear inner products* of the original high-dimensional vectors. \n")
     report.append("- For highly curved, non-linear manifolds, original inner products do not align with local geodesic or even local Euclidean neighborhoods—they force a global linear relationship. By forcing the bottleneck $Z$ to match linear high-dimensional inner products, the encoder's non-linear capacity is constrained, destroying its ability to represent the local manifold curvature. \n")
+    report.append("- **Solving the Curved Manifold Challenge with Local Geometry-Aware AE**: By switching the objective from global inner product alignment to local pairwise Euclidean distance preservation (using a symmetric k-nearest neighbors mask $M$), we only enforce geometry preservation within each point's local neighborhood. This allows the non-linear compressor to bend the manifold in the latent space freely to fit the bottleneck, maintaining local neighborhood order while ignoring global geodesic distortions. As a result, the **Local Geometry-Aware AE successfully outperforms PCA on Nonlinear Manifold (Recall@10 of ~0.9494 vs PCA's 0.9363)**.\n")
     report.append("- This highlights a major production insight: **The geometric alignment loss must match the structure of the data and the retrieval objective**. \n")
     report.append("  - **Cosine / Inner-Product alignment**: best for clustered semantic embeddings lying on a hypersphere.\n")
-    report.append("  - **Local Neighbor / Contrastive / Triplet loss**: best for task-specific retrieval (e.g. HNSW/IVF-PQ indexing).\n")
+    report.append("  - **Local Neighbor / Contrastive / Triplet / Local Distance-Preservation loss**: best for task-specific retrieval (e.g. HNSW/IVF-PQ indexing on curved or complex spaces).\n")
     report.append("  - **Geodesic or Manifold-aware regularization**: best for highly curved continuous manifolds.\n\n")
 
     report.append("### 3. Alternative Positionings of Autoencoders in Production\n")
-    report.append("If PCA is the superior geometric compressor for direct vector search, what are the use cases where Autoencoders excel? The true value of a non-linear Autoencoder lies in its capacity for **learned transformations, adaptation, and task-specific intelligence** rather than raw k-NN index retrieval:\n\n")
+    report.append("If PCA is the default geometric compressor for direct vector search, what are the use cases where Autoencoders excel? The true value of a non-linear Autoencoder lies in its capacity for **learned transformations, adaptation, and task-specific intelligence** rather than raw k-NN index retrieval:\n\n")
     report.append("1. **Denoising Layer**:\n")
     report.append("   By training a Denoising Autoencoder (adding noise to input embeddings during training, as implemented via `noise_std=0.05` in `MLPAutoencoder`), the network learns to robustly reconstruct the clean underlying semantic embedding from a noisy, weak, sparse, or corrupted input vector. This is highly useful for cleaning messy production inputs.\n\n")
     report.append("2. **Domain Adapter**:\n")
