@@ -261,7 +261,7 @@ def main():
     report.append("Does a superior reconstruction compressor yield a superior vector search representation? In this evaluation, we rigorously test four dimensional-compression methods across **two datasets** (a 128D clustered semantic embedding space and a 40D nonlinear manifold) using **both Euclidean and Cosine search metrics**, reporting **end-to-end information retrieval metrics** (Recall@k, NDCG@k, MRR) and **CPU encoding throughput/latency**.\n\n")
     report.append("### Key Findings\n")
     report.append("1. **Reconstruction vs. Retrieval (The Vanilla AE Fallacy)**: A vanilla Autoencoder trained purely on reconstruction MSE significantly warps geometry. Even when it reconstructs the input vectors with minimal loss, its bottleneck representation is non-linearly distorted. Consequently, **PCA routinely outperforms Vanilla Autoencoders on neighborhood preservation (k-NN Recall, MRR, and NDCG) by up to 10%** in the latent space.\n")
-    report.append("2. **Geometry-Aware Autoencoders are Worth Building**: By incorporating an **explicit pairwise-distance constraint** into the autoencoder's loss function, we created a **Distance-Preserving (Geometry-Aware) Autoencoder**. This hybrid model successfully recovers and often exceeds PCA's neighborhood preservation metrics, achieving the best of both worlds (nonlinear mapping with stable metric properties).\n")
+    report.append("2. **Task-Specific Alignment is Essential (Not Universal)**: Incorporating an **explicit pairwise-distance constraint** into the autoencoder's loss function creates a **Geometry-Aware Autoencoder**. While this hybrid model successfully recovers and exceeds PCA's neighborhood preservation metrics **on clustered semantic embeddings (highest Recall@10 = 0.3705 on Cosine)**, it fails dramatically on curved manifolds. This confirms that a geometry-preserving loss must be carefully matched to the structure of the data and retrieval objective.\n")
     report.append("3. **Operational Constraints**: PCA is exceptionally fast, achieving 5M+ encodings/sec on CPU. However, both MLP Autoencoder models are highly practical, with mean real-time query encoding latencies of **< 0.02 ms** (easily fitting typical online search SLA budgets of < 1-5 ms).\n\n")
 
     for ds_name, config in datasets.items():
@@ -361,21 +361,35 @@ def main():
     report.append("An Autoencoder maps the input space $X$ into a low-dimensional bottleneck $Z$, and a decoder maps $Z$ back to $X$. The reconstruction loss is defined as $||\\text{decode}(\\text{encode}(X)) - X||^2$. Crucially:\n\n")
     report.append("- **The Vanilla Autoencoder does not know about distances**: During encoder training, the neural network is free to squash, fold, or warp the latent space $Z$ in any highly non-linear manner, so long as the non-linear decoder is powerful enough to unfold and reconstruct $X$. Thus, even if the reconstruction error is extremely low, Euclidean distances in $Z$ bear little to no relationship to distances in $X$.\n")
     report.append("- **PCA preserves global Euclidean geometry**: PCA operates by calculating an orthogonal linear transformation that maximizes variance, which is mathematically equivalent to finding a projection that minimizes Euclidean projection distances. Consequently, PCA preserves Euclidean distances exceptionally well, resulting in far superior Recall@k, NDCG, and MRR compared to the Vanilla AE on both datasets.\n")
-    report.append("- **Geometry-Aware AE fixes the problem**: By adding an explicit pairwise distance-preservation objective to the Autoencoder's loss function (e.g. minimizing the difference between inner products in the original space and the compressed space), the bottleneck space $Z$ is forced to maintain a stable, isometric coordinate structure. This results in the **highest neighborhood preservation across all models on semantic embeddings (Recall@10 = 0.3705 on Cosine compared to PCA's 0.3565)**.\n\n")
+    report.append("- **Geometry-Aware AE is task-dependent**: By adding an explicit pairwise distance-preservation objective to the Autoencoder's loss function (e.g. minimizing the difference between inner products in the original space and the compressed space), the bottleneck space $Z$ is forced to maintain a stable coordinate structure. This results in the **highest neighborhood preservation across all models on semantic embeddings (Recall@10 = 0.3705 on Cosine compared to PCA's 0.3565)**.\n\n")
+
     report.append("### 2. Metric Alignment and the Curved Manifold Challenge\n")
     report.append("In the **Nonlinear Manifold** dataset, we observe a very interesting limitation: the **Geometry-Aware AE** underperforms PCA and Vanilla AE on Euclidean/Cosine Recall. Why does this happen?\n\n")
     report.append("- **The nature of the Nonlinear Manifold**: This dataset consists of highly curved, non-linear coordinates on a 3-dimensional manifold embedded in 40 dimensions. The pairwise similarity constraint we used (`S_orig = X @ X.T`) forces the bottleneck representations to match the *linear inner products* of the original high-dimensional vectors. \n")
     report.append("- For highly curved, non-linear manifolds, original inner products do not align with local geodesic or even local Euclidean neighborhoods—they force a global linear relationship. By forcing the bottleneck $Z$ to match linear high-dimensional inner products, the encoder's non-linear capacity is constrained, destroying its ability to represent the local manifold curvature. \n")
-    report.append("- This highlights a major production insight: **The geometric alignment loss must match the structure of the data**. For clustered semantic embeddings (where vectors lie on a hypersphere and cosine similarity is the natural metric), linear inner product alignment works beautifully. For highly curved continuous manifolds, one would need a geodesic distance alignment loss or local neighbor contrastive loss rather than global inner product alignment.\n\n")
+    report.append("- This highlights a major production insight: **The geometric alignment loss must match the structure of the data and the retrieval objective**. \n")
+    report.append("  - **Cosine / Inner-Product alignment**: best for clustered semantic embeddings lying on a hypersphere.\n")
+    report.append("  - **Local Neighbor / Contrastive / Triplet loss**: best for task-specific retrieval (e.g. HNSW/IVF-PQ indexing).\n")
+    report.append("  - **Geodesic or Manifold-aware regularization**: best for highly curved continuous manifolds.\n\n")
 
     report.append("### 3. Operational SLAs and Indexing Performance\n")
-    report.append("- **PCA and Random Projection** achieve **5M-10M vectors/sec** on CPU, as they are single matrix multiplies. In large corpus indexing (billions of vectors), using PCA yields huge savings in cloud compute resources.\n")
+    report.append("- **PCA and Random Projection** achieve **5M-15M vectors/sec** on CPU, as they are single matrix multiplies. In large corpus indexing (billions of vectors), using PCA yields huge savings in cloud compute resources.\n")
     report.append("- **The Autoencoder models** achieve **1M-1.5M vectors/sec** on CPU. While slower than PCA, an absolute real-time query encoding latency of **0.014 ms** is incredibly tiny and represents a fraction of 1% of standard production query SLA budgets (< 1-5 ms). Thus, query encoding with an MLP is highly viable in production.\n\n")
 
     report.append("### 4. Actionable Production Guide\n")
     report.append("1. **Do not use Vanilla reconstruction Autoencoders for vector compression** when indexing a database for direct k-NN retrieval. They warp coordinate geometry and degrade downstream search quality.\n")
     report.append("2. **Choose PCA** as the default baseline: it requires zero training overhead, provides highly robust neighborhood preservation, and yields massive encoding throughput.\n")
-    report.append("3. **Choose Geometry-Aware / Distance-Preserving Autoencoders** if you require non-linear dimensional reduction to beat PCA's retrieval metrics, and ensure your objective function explicitly regularizes the bottleneck representations to be isometric to the original representations.\n")
+    report.append("3. **Choose Geometry-Aware / Distance-Preserving Autoencoders** if you require non-linear dimensional reduction to beat PCA's retrieval metrics, and ensure your objective function explicitly regularizes the bottleneck representations using task-aligned latent objectives.\n")
+    report.append("4. **When is an Autoencoder worth building in production?** Only if you need:\n")
+    report.append("   - Task-specific compression (optimizing for end-to-end downstream tasks)\n")
+    report.append("   - Non-linear denoising or domain adaptation\n")
+    report.append("   - Supervised retrieval improvement with explicit pairwise constraints (like Cosine similarity matching)\n")
+    report.append("   - A learned latent layer integrated within a larger, end-to-end differentiable system.\n\n")
+
+    report.append("### 5. The Best Next Research Question\n")
+    report.append("The question is not 'Can an AE beat PCA on reconstruction MSE?' but rather:\n")
+    report.append("**'Can a task-aligned latent objective beat PCA on real retrieval benchmarks without increasing serving complexity?'**\n")
+    report.append("This is the core research question that can justify the added engineering and training complexity of non-linear vector compression in production.\n")
 
     with open("benchmark_report.md", "w") as f:
         f.writelines(report)
