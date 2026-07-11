@@ -233,3 +233,99 @@ class MLPAutoencoder:
         model.dec_b = [d[f'decb{i}'] for i in range(len(decoder_sizes) - 1)]
         model._init_adam()
         return model
+
+
+class LocalGeometryPreservingMLPAE(MLPAutoencoder):
+    def __init__(self, encoder_sizes, decoder_sizes, seed=42, bottleneck_activation='tanh', lambda_dist=1.0, k=5):
+        super().__init__(encoder_sizes, decoder_sizes, seed, bottleneck_activation)
+        self.lambda_dist = lambda_dist
+        self.k = k
+
+    def loss_and_grad(self, X, l2=0.0, noise_std=0.0, rng=None):
+        N, V = X.shape
+        enc_pre, enc_act, dec_pre, dec_act = self._forward(X, noise_std=noise_std, rng=rng)
+        E_recon = dec_act[-1]
+
+        l2_term = 0.0
+        if l2 > 0:
+            for W in self.enc_W + self.dec_W:
+                l2_term += 0.5 * l2 * np.sum(W ** 2)
+
+        # Standard reconstruction loss
+        recon_loss = np.mean((E_recon - X) ** 2)
+
+        # Bottleneck activation Z
+        Z = enc_act[-1]
+
+        # Compute pairwise Euclidean distances in X (input space)
+        sum_X = np.sum(X**2, axis=1)
+        D_X2 = sum_X[:, None] + sum_X[None, :] - 2.0 * (X @ X.T)
+        D_X = np.sqrt(np.maximum(D_X2, 0.0))
+
+        # Compute pairwise Euclidean distances in Z (bottleneck space)
+        sum_Z = np.sum(Z**2, axis=1)
+        D_Z2 = sum_Z[:, None] + sum_Z[None, :] - 2.0 * (Z @ Z.T)
+        D_Z = np.sqrt(np.maximum(D_Z2, 0.0))
+
+        # Construct symmetric k-nearest neighbors mask
+        D_X_temp = D_X.copy()
+        np.fill_diagonal(D_X_temp, np.inf)
+
+        k_eff = min(self.k, N - 1)
+        if k_eff > 0:
+            knn_indices = np.argpartition(D_X_temp, k_eff, axis=1)[:, :k_eff]
+            M = np.zeros((N, N))
+            rows = np.arange(N)[:, None]
+            M[rows, knn_indices] = 1.0
+            M = np.maximum(M, M.T)
+        else:
+            M = np.zeros((N, N))
+
+        # Compute local distance preservation loss (Euclidean distance difference)
+        diff_D = D_Z - D_X
+        dist_loss = (self.lambda_dist / (N ** 2)) * np.sum(M * (diff_D ** 2))
+
+        loss = recon_loss + dist_loss + l2_term
+
+        # Backpropagation
+        grads_dec_W = [None] * len(self.dec_W)
+        grads_dec_b = [None] * len(self.dec_b)
+        grads_enc_W = [None] * len(self.enc_W)
+        grads_enc_b = [None] * len(self.enc_b)
+
+        # Gradients from reconstruction loss
+        d_out = 2.0 * (E_recon - X) / (N * V)
+        n_dec = len(self.dec_W)
+        delta = d_out
+        for i in reversed(range(n_dec)):
+            a_prev = dec_act[i]
+            grads_dec_W[i] = a_prev.T @ delta + l2 * self.dec_W[i]
+            grads_dec_b[i] = np.sum(delta, axis=0, keepdims=True)
+            if i > 0:
+                d_a_prev = delta @ self.dec_W[i].T
+                delta = d_a_prev * (1 - dec_act[i] ** 2)
+        d_z_recon = delta @ self.dec_W[0].T
+
+        # Gradients from distance preservation loss
+        eps = 1e-9
+        A = 4.0 * M * (diff_D / (D_Z + eps))
+        D_A = np.diag(np.sum(A, axis=1))
+        d_z_dist = (self.lambda_dist / (N ** 2)) * (D_A @ Z - A @ Z)
+
+        # Combine gradients flowing back into bottleneck code z
+        d_z = d_z_recon + d_z_dist
+
+        n_enc = len(self.enc_W)
+        if self.bottleneck_activation == 'tanh':
+            delta = d_z * (1 - enc_act[-1] ** 2)
+        else:
+            delta = d_z
+        for i in reversed(range(n_enc)):
+            a_prev = enc_act[i]
+            grads_enc_W[i] = a_prev.T @ delta + l2 * self.enc_W[i]
+            grads_enc_b[i] = np.sum(delta, axis=0, keepdims=True)
+            if i > 0:
+                d_a_prev = delta @ self.enc_W[i].T
+                delta = d_a_prev * (1 - enc_act[i] ** 2)
+
+        return loss, grads_enc_W, grads_enc_b, grads_dec_W, grads_dec_b
